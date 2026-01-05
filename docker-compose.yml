@@ -1,0 +1,108 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: keycloak-postgres
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: password123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0.3
+    container_name: keycloak-server
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: password123
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_PORT: 8080
+      KC_HOSTNAME_STRICT_HTTPS: false
+      KC_HOSTNAME_STRICT_BACKCHANNEL: false
+      KC_HTTP_ENABLED: true
+      KC_HOSTNAME_STRICT: false
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: false
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin123
+    command: start-dev
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /realms/master HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -q '\"realm\":\"master\"' && exec 3<&-",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  keycloak-config:
+    image: curlimages/curl:8.5.0
+    container_name: keycloak-config
+    user: "0:0"
+    volumes:
+      - ./keycloak/realm-config.json:/opt/keycloak/data/import/realm-config.json:ro
+      - ./keycloak/import-realm.sh:/opt/keycloak/data/import/import-realm.sh
+    depends_on:
+      - keycloak
+    networks:
+      - app-network
+    entrypoint: ["/bin/sh"]
+    command:
+      [
+        "-c",
+        "apk add --no-cache jq && sleep 60 && chmod +x /opt/keycloak/data/import/import-realm.sh && /opt/keycloak/data/import/import-realm.sh",
+      ]
+
+  webapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dotnet-webapi
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+      - Keycloak__Authority=http://localhost:8080/realms/webapi-realm
+      - Keycloak__InternalAuthority=http://keycloak:8080/realms/webapi-realm
+      - Keycloak__Audience=keycloak-web-api
+      - Keycloak__ClientId=keycloak-web-api
+      - Keycloak__ClientSecret=web-api-client-secret-123
+      - Keycloak__RequireHttpsMetadata=false
+    ports:
+      - "5001:8080"
+    depends_on:
+      - keycloak-config
+    networks:
+      - app-network
+    healthcheck:
+      test:
+        ["CMD-SHELL", "curl -f http://localhost:8080/api/auth/public || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:
+
+networks:
+  app-network:
+    driver: bridge
