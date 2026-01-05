@@ -80,14 +80,29 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     {
         var keycloakConfig = builder.Configuration.GetSection("Keycloak");
 
-        options.Authority = keycloakConfig["Authority"];
+        // Use InternalAuthority for fetching JWKS inside Docker
+        var internalAuthority = keycloakConfig["InternalAuthority"];
+        var publicAuthority = keycloakConfig["Authority"];
+
+        // Use internal authority if available (for Docker), otherwise public
+        var authority = !string.IsNullOrEmpty(internalAuthority) ? internalAuthority : publicAuthority;
+
+        options.Authority = authority;
+
+        // Set MetadataAddress to fetch JWKS from internal authority
+        if (!string.IsNullOrEmpty(internalAuthority))
+        {
+            options.MetadataAddress = $"{internalAuthority}/.well-known/openid-configuration";
+        }
+
         options.Audience = keycloakConfig["Audience"];
         options.RequireHttpsMetadata = bool.Parse(keycloakConfig["RequireHttpsMetadata"] ?? "true");
 
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
-            ValidateAudience = true,
+            ValidIssuer = publicAuthority, // Always validate against public issuer in tokens
+            ValidateAudience = false, // Keycloak doesn't always include audience in access tokens
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
             ClockSkew = TimeSpan.Zero,
@@ -98,10 +113,24 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         {
             OnTokenValidated = context =>
             {
-                // Extract roles from the resource_access claim
                 var claimsIdentity = context.Principal.Identity as ClaimsIdentity;
-                var resourceAccess = context.Principal.FindFirst("resource_access")?.Value;
 
+                // Extract roles from realm_access claim
+                var realmAccess = context.Principal.FindFirst("realm_access")?.Value;
+                if (!string.IsNullOrEmpty(realmAccess))
+                {
+                    var realmAccessJson = System.Text.Json.JsonDocument.Parse(realmAccess);
+                    if (realmAccessJson.RootElement.TryGetProperty("roles", out var realmRoles))
+                    {
+                        foreach (var role in realmRoles.EnumerateArray())
+                        {
+                            claimsIdentity?.AddClaim(new Claim(ClaimTypes.Role, role.GetString()));
+                        }
+                    }
+                }
+
+                // Extract roles from resource_access claim
+                var resourceAccess = context.Principal.FindFirst("resource_access")?.Value;
                 if (!string.IsNullOrEmpty(resourceAccess))
                 {
                     var resourceAccessJson = System.Text.Json.JsonDocument.Parse(resourceAccess);

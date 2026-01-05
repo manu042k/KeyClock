@@ -4,12 +4,12 @@ A comprehensive ASP.NET Core Web API project integrated with Keycloak for authen
 
 ## Features
 
-- 🔐 **JWT Authentication**: Integration with Keycloak for secure authentication
-- 🛡️ **Role-based Authorization**: Different access levels (Admin, User, Public)
-- 📝 **Swagger Documentation**: Interactive API documentation with JWT support
-- 🐳 **Docker Support**: Complete Docker Compose setup for Keycloak
-- 🎯 **Sample Controllers**: Demonstration of various authorization scenarios
-- ⚡ **RESTful API**: Clean and well-structured API endpoints
+- **JWT Authentication**: Integration with Keycloak for secure authentication
+- **Role-based Authorization**: Different access levels (Admin, User, Public)
+- **Swagger Documentation**: Interactive API documentation with JWT support
+- **Docker Support**: Complete Docker Compose setup for Keycloak
+- **Sample Controllers**: Demonstration of various authorization scenarios
+- **RESTful API**: Clean and well-structured API endpoints
 
 ## Project Structure
 
@@ -266,14 +266,3 @@ Enable detailed logging by updating `appsettings.json`:
   }
 }
 ```
-
-## Production Deployment
-
-1. **Update appsettings.Production.json** with production Keycloak URLs
-2. **Enable HTTPS**: Set `RequireHttpsMetadata: true`
-3. **Secure Secrets**: Use Azure Key Vault or similar for sensitive configuration
-4. **Update CORS**: Configure specific origins instead of allowing all
-
-## License
-
-This project is licensed under the MIT License.
