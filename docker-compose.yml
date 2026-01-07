@@ -1,108 +1,109 @@
+version: "3.8"
+
 services:
   postgres:
-    image: postgres:15
+    image: postgres:16-alpine
     container_name: keycloak-postgres
     environment:
       POSTGRES_DB: keycloak
       POSTGRES_USER: keycloak
-      POSTGRES_PASSWORD: password123
+      POSTGRES_PASSWORD: keycloak
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     networks:
-      - app-network
+      - keycloak-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 10s
+      timeout: 5s
       retries: 5
 
   keycloak:
-    image: quay.io/keycloak/keycloak:23.0.3
-    container_name: keycloak-server
+    image: quay.io/keycloak/keycloak:23.0
+    container_name: keycloak
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: keycloak
-      KC_DB_PASSWORD: password123
-      KC_HOSTNAME: localhost
-      KC_HOSTNAME_PORT: 8080
-      KC_HOSTNAME_STRICT_HTTPS: false
-      KC_HOSTNAME_STRICT_BACKCHANNEL: false
-      KC_HTTP_ENABLED: true
-      KC_HOSTNAME_STRICT: false
-      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: false
+      KC_DB_PASSWORD: keycloak
       KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin123
-    command: start-dev
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: true
+      KC_METRICS_ENABLED: true
+      KC_HOSTNAME_URL: http://localhost:8080
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_BACKCHANNEL: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY: "edge"
+    command:
+      - start-dev
+      - --import-realm
+    volumes:
+      - keycloak-import:/opt/keycloak/data/import
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
+      keycloak-init:
+        condition: service_completed_successfully
     networks:
-      - app-network
+      - keycloak-network
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /realms/master HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -q '\"realm\":\"master\"' && exec 3<&-",
+          "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e 'GET /health/ready HTTP/1.1\r\nhost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n' >&3;grep 'HTTP/1.1 200 OK' <&3",
         ]
-      interval: 30s
-      timeout: 10s
-      retries: 10
+      interval: 10s
+      timeout: 5s
+      retries: 30
       start_period: 60s
 
-  keycloak-config:
-    image: curlimages/curl:8.5.0
-    container_name: keycloak-config
-    user: "0:0"
-    volumes:
-      - ./keycloak/realm-config.json:/opt/keycloak/data/import/realm-config.json:ro
-      - ./keycloak/import-realm.sh:/opt/keycloak/data/import/import-realm.sh
-    depends_on:
-      - keycloak
-    networks:
-      - app-network
-    entrypoint: ["/bin/sh"]
-    command:
-      [
-        "-c",
-        "apk add --no-cache jq && sleep 60 && chmod +x /opt/keycloak/data/import/import-realm.sh && /opt/keycloak/data/import/import-realm.sh",
-      ]
-
   webapi:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: dotnet-webapi
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ASPNETCORE_URLS=http://+:8080
-      - Keycloak__Authority=http://localhost:8080/realms/webapi-realm
-      - Keycloak__InternalAuthority=http://keycloak:8080/realms/webapi-realm
-      - Keycloak__Audience=keycloak-web-api
-      - Keycloak__ClientId=keycloak-web-api
-      - Keycloak__ClientSecret=web-api-client-secret-123
-      - Keycloak__RequireHttpsMetadata=false
+    build: .
+    container_name: webapi
     ports:
-      - "5001:8080"
+      - "5100:8080"
+    environment:
+      - Keycloak__Realm=webapi-realm
+      - Keycloak__AdminUrl=http://keycloak:8080
+      - Keycloak__Authority=http://localhost:8080/realms/webapi-realm
+      - Keycloak__MetadataAddress=http://keycloak:8080/realms/webapi-realm/.well-known/openid-configuration
+      - Keycloak__RequireHttpsMetadata=false
+      - Keycloak__AdminClientId=admin-cli
+      - Keycloak__AdminClientSecret=admin-cli-secret
+      - Swagger__AuthorizationUrl=http://localhost:8080/realms/webapi-realm/protocol/openid-connect/auth
+      - Swagger__TokenUrl=http://localhost:8080/realms/webapi-realm/protocol/openid-connect/token
+      - ASPNETCORE_ENVIRONMENT=Development
     depends_on:
-      - keycloak-config
+      keycloak:
+        condition: service_healthy
     networks:
-      - app-network
-    healthcheck:
-      test:
-        ["CMD-SHELL", "curl -f http://localhost:8080/api/auth/public || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+      - keycloak-network
+
+  # Init container to handle env variable substitution for Keycloak configuration
+  keycloak-init:
+    image: alpine:latest
+    container_name: keycloak-init
+    volumes:
+      - ./realm-export.json:/config/realm-export.json.template
+      - keycloak-import:/opt/keycloak/data/import
+    env_file:
+      - .env
+    command: >
+      sh -c "
+        apk add --no-cache gettext &&
+        envsubst < /config/realm-export.json.template > /opt/keycloak/data/import/realm-export.json &&
+        echo 'Configuration processed'
+      "
 
 volumes:
-  postgres_data:
+  postgres-data:
+  keycloak-import:
 
 networks:
-  app-network:
+  keycloak-network:
     driver: bridge
